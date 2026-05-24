@@ -1,0 +1,27 @@
+-- Job Error Log Alert Monitor
+-- Monitors job_error_logs table for recent job failures
+-- 
+-- Setup Instructions:
+-- 1. Create this as a SQL query in Databricks SQL
+-- 2. Create an alert from the query:
+--    - Trigger Condition: "Value" > 0 or "Rows" > 0
+--    - Refresh Schedule: Every 1-5 minutes
+--    - Destination: Email with custom template
+-- 3. Use the email template from config/email_template.html
+
+SELECT 
+  workspace_id,
+  job_id,
+  job_name,
+  run_id,
+  run_name,
+  start_time,
+  end_time,
+  duration_seconds,
+  result_state,
+  state_message,
+  logged_at
+FROM email_alert.sample_email.job_error_logs
+WHERE logged_at >= CURRENT_TIMESTAMP() - INTERVAL 1 hour
+ORDER BY logged_at DESC
+LIMIT 1;
