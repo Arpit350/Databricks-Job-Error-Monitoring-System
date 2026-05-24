@@ -1,0 +1,30 @@
+{
+  "description": "Configuration parameters for Databricks Job Error Monitoring System",
+  "job_monitoring": {
+    "job_id": 198373878629160,
+    "workspace_id": "560696151014778",
+    "description": "Replace these with your actual job ID and workspace ID"
+  },
+  "delta_table": {
+    "catalog": "email_alert",
+    "schema": "sample_email",
+    "table": "job_error_logs",
+    "full_path": "email_alert.sample_email.job_error_logs",
+    "description": "Update catalog and schema names as needed"
+  },
+  "error_logger_schedule": {
+    "frequency": "every 15-60 minutes",
+    "description": "How often to check for new job failures"
+  },
+  "sql_alert": {
+    "query_time_window": "1 hour",
+    "refresh_schedule": "1-5 minutes",
+    "trigger_condition": "rows > 0",
+    "description": "Alert triggers when new errors appear in the table"
+  },
+  "email_notification": {
+    "recipient": "sriarpit457@gmail.com",
+    "template_path": "config/email_template.html",
+    "description": "Update recipient email address"
+  }
+}
