@@ -1,0 +1,34 @@
+-- Create Unity Catalog Schema for Job Error Logs
+-- Run this before using the error monitoring system
+
+-- Create catalog (if it doesn't exist)
+CREATE CATALOG IF NOT EXISTS email_alert;
+
+-- Create schema
+CREATE SCHEMA IF NOT EXISTS email_alert.sample_email;
+
+-- The error logs table will be created automatically by the Error Logger notebook
+-- on first run, but you can create it manually if needed:
+
+CREATE TABLE IF NOT EXISTS email_alert.sample_email.job_error_logs (
+  workspace_id STRING COMMENT 'Databricks workspace ID',
+  job_id STRING COMMENT 'Databricks job ID that failed',
+  job_name STRING COMMENT 'Name of the failed job',
+  run_id STRING COMMENT 'Unique run ID for this failed execution',
+  run_name STRING COMMENT 'Name of the job run',
+  start_time STRING COMMENT 'Timestamp when the job run started',
+  end_time STRING COMMENT 'Timestamp when the job run ended',
+  duration_seconds DOUBLE COMMENT 'Duration of the job run in seconds',
+  result_state STRING COMMENT 'Final result state (FAILED, TIMEDOUT, etc.)',
+  life_cycle_state STRING COMMENT 'Life cycle state of the run',
+  state_message STRING COMMENT 'Detailed error message from the job failure',
+  task_errors STRING COMMENT 'JSON string containing task-level error details',
+  logged_at STRING COMMENT 'Timestamp when this error was logged'
+)
+COMMENT 'Stores detailed error logs from Databricks job failures'
+TBLPROPERTIES (
+  'delta.enableChangeDataFeed' = 'true'
+);
+
+-- Grant permissions (update user/group as needed)
+-- GRANT SELECT, INSERT ON TABLE email_alert.sample_email.job_error_logs TO `your_user_or_group`;
