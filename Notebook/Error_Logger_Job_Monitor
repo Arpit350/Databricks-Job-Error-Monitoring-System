@@ -1,0 +1,367 @@
+# Databricks notebook source
+# MAGIC %md
+# MAGIC # Error Logger for Databricks Job
+# MAGIC 
+# MAGIC This notebook uses the Databricks SDK to fetch detailed information about job runs, including:
+# MAGIC * Job configuration details
+# MAGIC * Run history with timestamps
+# MAGIC * Error messages and failure reasons
+# MAGIC * Workspace ID, Job ID, Run ID
+# MAGIC * Task-level error details
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Configuration
+# MAGIC 
+# MAGIC Update these parameters for your environment:
+
+# COMMAND ----------
+
+# Job ID to monitor (find this in your job's URL)
+JOB_ID = 198373878629160  # TODO: Replace with your job ID
+
+# Your workspace ID (find in workspace URL: https://...cloud.databricks.com/?o=WORKSPACE_ID)
+WORKSPACE_ID = "560696151014778"  # TODO: Replace with your workspace ID
+
+# Delta table path for storing error logs
+TABLE_NAME = "email_alert.sample_email.job_error_logs"  # TODO: Update catalog/schema if needed
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Install Databricks SDK
+
+# COMMAND ----------
+
+# Install the Databricks SDK
+%pip install databricks-sdk --upgrade --quiet
+
+# COMMAND ----------
+
+# Restart Python to load the newly installed package
+dbutils.library.restartPython()
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Import Libraries and Initialize SDK
+
+# COMMAND ----------
+
+from databricks.sdk import WorkspaceClient
+from databricks.sdk.service.jobs import RunResultState, RunLifeCycleState
+from datetime import datetime
+import pandas as pd
+import json
+
+# Initialize the Databricks WorkspaceClient (auto-authenticates in notebook)
+w = WorkspaceClient()
+
+print("✅ Databricks SDK initialized successfully")
+print(f"📊 Monitoring Job ID: {JOB_ID}")
+print(f"🏢 Workspace ID: {WORKSPACE_ID}")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Fetch Job Configuration
+
+# COMMAND ----------
+
+# Fetch complete job configuration
+job = w.jobs.get(job_id=JOB_ID)
+
+print("="*100)
+print(" "*35 + "JOB CONFIGURATION DETAILS")
+print("="*100)
+print(f"\n📋 Basic Information:")
+print(f"   Job ID:           {job.job_id}")
+print(f"   Job Name:         {job.settings.name}")
+print(f"   Creator:          {job.creator_user_name}")
+print(f"   Created Time:     {datetime.fromtimestamp(job.created_time/1000).strftime('%Y-%m-%d %H:%M:%S')}")
+print(f"   Run As User:      {job.run_as_user_name}")
+
+print(f"\n⚙️  Job Settings:")
+print(f"   Max Concurrent Runs:  {job.settings.max_concurrent_runs}")
+print(f"   Timeout Seconds:      {job.settings.timeout_seconds if job.settings.timeout_seconds else 'None'}")
+
+if job.settings.email_notifications:
+    print(f"\n📧 Email Notifications Configured:")
+    if job.settings.email_notifications.on_failure:
+        print(f"   On Failure: {', '.join(job.settings.email_notifications.on_failure)}")
+    if job.settings.email_notifications.on_success:
+        print(f"   On Success: {', '.join(job.settings.email_notifications.on_success)}")
+
+print("="*100)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Fetch Recent Job Runs
+
+# COMMAND ----------
+
+# Fetch the 20 most recent runs for this job
+print("\n" + "="*100)
+print(" "*38 + "RECENT JOB RUNS (Last 20)")
+print("="*100)
+
+# Convert to list so we can iterate multiple times
+runs_response = list(w.jobs.list_runs(job_id=JOB_ID, limit=20))
+
+run_list = []
+for run in runs_response:
+    # Calculate duration if available
+    duration = None
+    if run.start_time and run.end_time:
+        duration = round((run.end_time - run.start_time) / 1000, 2)  # Convert to seconds
+    
+    run_info = {
+        'Run ID': run.run_id,
+        'Run Name': run.run_name or 'N/A',
+        'Trigger': run.trigger.value if run.trigger else 'Manual',
+        'Start Time': datetime.fromtimestamp(run.start_time/1000).strftime('%Y-%m-%d %H:%M:%S') if run.start_time else 'N/A',
+        'End Time': datetime.fromtimestamp(run.end_time/1000).strftime('%Y-%m-%d %H:%M:%S') if run.end_time else 'N/A',
+        'Duration (s)': duration,
+        'State': run.state.life_cycle_state.value if run.state else 'Unknown',
+        'Result': run.state.result_state.value if run.state and run.state.result_state else 'N/A'
+    }
+    run_list.append(run_info)
+
+# Display as DataFrame
+df_runs = pd.DataFrame(run_list)
+display(df_runs)
+
+print(f"\n📊 Total runs fetched: {len(run_list)}")
+print("="*100)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Extract Detailed Error Information for Failed Runs
+
+# COMMAND ----------
+
+# Get detailed error information for failed runs
+print("\n" + "="*100)
+print(" "*30 + "DETAILED ERROR INFORMATION FOR FAILED RUNS")
+print("="*100)
+
+failed_runs = []
+error_details_list = []
+
+for run in runs_response:
+    # Check for any failure state (FAILED, TIMEDOUT, CANCELED, etc.)
+    if run.state and run.state.result_state in [RunResultState.FAILED, RunResultState.TIMEDOUT]:
+        # Fetch full run details to get error messages
+        run_detail = w.jobs.get_run(run_id=run.run_id)
+        
+        duration = None
+        if run.start_time and run.end_time:
+            duration = round((run.end_time - run.start_time) / 1000, 2)
+        
+        error_info = {
+            'workspace_id': WORKSPACE_ID,
+            'job_id': JOB_ID,
+            'job_name': job.settings.name,
+            'run_id': run.run_id,
+            'run_name': run.run_name or 'N/A',
+            'start_time': datetime.fromtimestamp(run.start_time/1000).strftime('%Y-%m-%d %H:%M:%S') if run.start_time else 'N/A',
+            'end_time': datetime.fromtimestamp(run.end_time/1000).strftime('%Y-%m-%d %H:%M:%S') if run.end_time else 'N/A',
+            'duration_seconds': duration,
+            'result_state': run.state.result_state.value,
+            'life_cycle_state': run.state.life_cycle_state.value,
+            'state_message': run.state.state_message if run.state.state_message else 'No message available',
+        }
+        
+        # Get task-level errors if available
+        task_errors = []
+        if run_detail.tasks:
+            for task in run_detail.tasks:
+                if task.state and task.state.result_state in [RunResultState.FAILED, RunResultState.TIMEDOUT]:
+                    # Start with the generic task state message
+                    task_detailed_error = task.state.state_message if task.state.state_message else 'No task message'
+                    
+                    # Try to fetch the actual notebook execution output for detailed error
+                    try:
+                        output = w.jobs.get_run_output(run_id=task.run_id)
+                        # Extract the actual error from the notebook execution
+                        if output.error:
+                            task_detailed_error = output.error
+                        elif output.error_trace:
+                            task_detailed_error = output.error_trace
+                    except Exception as e:
+                        # If get_run_output fails, append the exception info
+                        task_detailed_error += f" (Failed to fetch detailed output: {str(e)})"
+                    
+                    task_error = {
+                        'task_key': task.task_key,
+                        'task_result_state': task.state.result_state.value,
+                        'task_state_message': task_detailed_error,
+                    }
+                    task_errors.append(task_error)
+        
+        # If we have detailed task errors, use the first one as the main state message
+        if task_errors and task_errors[0]['task_state_message']:
+            error_info['state_message'] = task_errors[0]['task_state_message']
+        
+        error_info['task_errors'] = task_errors
+        failed_runs.append(error_info)
+        
+        # Print detailed error for each failed run
+        print(f"\n🔴 FAILED RUN #{run.run_id}")
+        print("-" * 100)
+        print(f"   Workspace ID:     {error_info['workspace_id']}")
+        print(f"   Job ID:           {error_info['job_id']}")
+        print(f"   Job Name:         {error_info['job_name']}")
+        print(f"   Run ID:           {error_info['run_id']}")
+        print(f"   Run Name:         {error_info['run_name']}")
+        print(f"   Start Time:       {error_info['start_time']}")
+        print(f"   End Time:         {error_info['end_time']}")
+        print(f"   Duration:         {error_info['duration_seconds']}s")
+        print(f"   Result State:     {error_info['result_state']}")
+        print(f"   Life Cycle State: {error_info['life_cycle_state']}")
+        print(f"   State Message:    {error_info['state_message']}")
+        
+        if task_errors:
+            print(f"\n   📋 Task-Level Errors:")
+            for idx, task_err in enumerate(task_errors, 1):
+                print(f"      Task {idx}: {task_err['task_key']}")
+                print(f"         Result State: {task_err['task_result_state']}")
+                print(f"         Error Message: {task_err['task_state_message']}")
+        
+        print("-" * 100)
+        
+        # Prepare data for DataFrame
+        error_details_list.append({
+            'Workspace ID': error_info['workspace_id'],
+            'Job ID': error_info['job_id'],
+            'Run ID': error_info['run_id'],
+            'Start Time': error_info['start_time'],
+            'End Time': error_info['end_time'],
+            'Duration (s)': error_info['duration_seconds'],
+            'Result State': error_info['result_state'],
+            'Error Message': error_info['state_message'][:100] + '...' if len(error_info['state_message']) > 100 else error_info['state_message']
+        })
+
+if not failed_runs:
+    print("\n✅ No failed runs found in the recent history.")
+else:
+    print(f"\n⚠️  Total Failed Runs: {len(failed_runs)}")
+    print("\n📊 Failed Runs Summary Table:")
+    df_errors = pd.DataFrame(error_details_list)
+    display(df_errors)
+
+print("="*100)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Save Error Logs to Delta Table
+# MAGIC 
+# MAGIC This cell saves error logs to a Delta table with duplicate prevention.
+
+# COMMAND ----------
+
+# Create and save error logs to Delta table (only NEW errors, no duplicates)
+from pyspark.sql.types import StructType, StructField, StringType, LongType, TimestampType, ArrayType
+
+if failed_runs:
+    # Check if table exists and get already logged run_ids
+    try:
+        existing_run_ids = spark.sql(f"""
+            SELECT DISTINCT run_id 
+            FROM {TABLE_NAME}
+        """).collect()
+        existing_run_ids_set = {row.run_id for row in existing_run_ids}
+        print(f"\n📊 Found {len(existing_run_ids_set)} unique run_ids already logged in the table")
+    except Exception as e:
+        # Table doesn't exist yet, all runs are new
+        existing_run_ids_set = set()
+        print(f"\n📊 Table doesn't exist yet - all {len(failed_runs)} errors are new")
+    
+    # Filter to only NEW failed runs (not already logged)
+    new_failed_runs = [error for error in failed_runs if str(error['run_id']) not in existing_run_ids_set]
+    skipped_count = len(failed_runs) - len(new_failed_runs)
+    
+    print(f"\n🔍 Duplicate Check Results:")
+    print(f"   Total failed runs found:     {len(failed_runs)}")
+    print(f"   Already logged (skipped):    {skipped_count}")
+    print(f"   New errors to log:           {len(new_failed_runs)}")
+    
+    if new_failed_runs:
+        # Prepare data for Delta table
+        table_data = []
+        for error in new_failed_runs:
+            table_data.append({
+                'workspace_id': error['workspace_id'],
+                'job_id': str(error['job_id']),
+                'job_name': error['job_name'],
+                'run_id': str(error['run_id']),
+                'run_name': error['run_name'],
+                'start_time': error['start_time'],
+                'end_time': error['end_time'],
+                'duration_seconds': error['duration_seconds'],
+                'result_state': error['result_state'],
+                'life_cycle_state': error['life_cycle_state'],
+                'state_message': error['state_message'],
+                'task_errors': json.dumps(error['task_errors']),  # Store as JSON string
+                'logged_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            })
+        
+        # Create DataFrame from error data
+        df_error_logs = spark.createDataFrame(table_data)
+        
+        # Save to Delta table (append mode to preserve historical logs)
+        df_error_logs.write.mode("append").format("delta").saveAsTable(TABLE_NAME)
+        
+        print("\n" + "="*100)
+        print(f"✅ NEW error logs saved to Delta table: {TABLE_NAME}")
+        print(f"📊 Total NEW errors logged: {len(new_failed_runs)}")
+        if skipped_count > 0:
+            print(f"⏭️  Skipped {skipped_count} duplicate(s) that were already logged")
+        print("="*100)
+        
+        # Display the newly added logs
+        print("\n📋 Newly Added Error Logs:")
+        new_run_ids = [str(error['run_id']) for error in new_failed_runs]
+        new_logs = spark.sql(f"""
+            SELECT 
+                workspace_id,
+                job_id,
+                run_id,
+                start_time,
+                end_time,
+                result_state,
+                logged_at
+            FROM {TABLE_NAME}
+            WHERE run_id IN ('{"', '".join(new_run_ids)}')
+            ORDER BY logged_at DESC
+        """)
+        display(new_logs)
+    else:
+        print("\n" + "="*100)
+        print(f"✅ No new errors to log - all {len(failed_runs)} failed run(s) already exist in the table")
+        print("="*100)
+        
+        # Display recent logs from the table
+        print("\n📋 Recent Error Logs (Last 10):")
+        recent_logs = spark.sql(f"""
+            SELECT 
+                workspace_id,
+                job_id,
+                run_id,
+                start_time,
+                end_time,
+                result_state,
+                logged_at
+            FROM {TABLE_NAME}
+            ORDER BY logged_at DESC
+            LIMIT 10
+        """)
+        display(recent_logs)
+    
+else:
+    print("\n✅ No failed runs found - nothing to log to Delta table.")
+    print("The job error logs table will be created when the first error occurs.")
